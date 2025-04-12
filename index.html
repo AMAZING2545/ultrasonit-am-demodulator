@@ -141,6 +141,13 @@
     
     <div class="control-group">
         <div class="control-row">
+            <label for="inputGainControl">Input Gain:</label>
+            <input type="range" id="inputGainControl" min="1" max="20" value="5" step="0.1">
+            <span id="inputGainValue" class="value-display">5</span>
+            <span>x</span>
+        </div>
+        
+        <div class="control-row">
             <label for="gainControl">Output Gain:</label>
             <input type="range" id="gainControl" min="0.1" max="20" value="8" step="0.1">
             <span id="gainValue" class="value-display">8</span>
@@ -195,6 +202,7 @@
         let analyser;
         let bandpassFilter;
         let lowpassFilter;
+        let inputGainNode;
         let stream;
         let isRunning = false;
         let recordedData = [];
@@ -219,6 +227,8 @@
         const rangeValue = document.getElementById('rangeValue');
         const noiseFloorControl = document.getElementById('noiseFloorControl');
         const noiseFloorValue = document.getElementById('noiseFloorValue');
+        const inputGainControl = document.getElementById('inputGainControl');
+        const inputGainValue = document.getElementById('inputGainValue');
         
         // Control elements
         const carrierControl = document.getElementById('carrierControl');
@@ -235,6 +245,7 @@
         let currentCarrier = 19000;
         let currentBandwidth = 4000;
         let currentGain = 8;
+        let currentInputGain = 5;
         let currentAgcStrength = 0.5;
         
         // AGC variables
@@ -261,6 +272,14 @@
             gainValue.textContent = currentGain.toFixed(1);
         });
         
+        inputGainControl.addEventListener('input', function() {
+            currentInputGain = parseFloat(this.value);
+            inputGainValue.textContent = currentInputGain.toFixed(1);
+            if (inputGainNode) {
+                inputGainNode.gain.value = currentInputGain;
+            }
+        });
+        
         agcControl.addEventListener('input', function() {
             currentAgcStrength = parseFloat(this.value);
             agcValue.textContent = currentAgcStrength.toFixed(2);
@@ -276,12 +295,14 @@
             carrierControl.value = 19000;
             bandwidthControl.value = 4000;
             gainControl.value = 8;
+            inputGainControl.value = 5;
             agcControl.value = 0.5;
             noiseFloorControl.value = 0.05;
             
             currentCarrier = 19000;
             currentBandwidth = 4000;
             currentGain = 8;
+            currentInputGain = 5;
             currentAgcStrength = 0.5;
             noiseFloor = 0.05;
             agcTarget = 0.5;
@@ -289,9 +310,13 @@
             carrierValue.textContent = '19000';
             bandwidthValue.textContent = '4000';
             gainValue.textContent = '8';
+            inputGainValue.textContent = '5';
             agcValue.textContent = '0.50';
             noiseFloorValue.textContent = '0.05';
             
+            if (inputGainNode) {
+                inputGainNode.gain.value = currentInputGain;
+            }
             updateFilters();
         });
         
@@ -363,12 +388,17 @@
                     audio: {
                         echoCancellation: false,
                         noiseSuppression: false,
-                        autoGainControl: false
+                        autoGainControl: false,
+                        sampleRate: fs
                     } 
                 })
                 .then(function(mediaStream) {
                     stream = mediaStream;
                     const source = audioContext.createMediaStreamSource(mediaStream);
+                    
+                    // Create input gain node
+                    inputGainNode = audioContext.createGain();
+                    inputGainNode.gain.value = currentInputGain;
                     
                     // Create processing chain
                     bandpassFilter = createBandpassFilter(audioContext, 
@@ -386,7 +416,8 @@
                     analyser.smoothingTimeConstant = 0.8;
                     
                     // Connect nodes
-                    source.connect(bandpassFilter);
+                    source.connect(inputGainNode);
+                    inputGainNode.connect(bandpassFilter);
                     
                     processor.onaudioprocess = function(e) {
                         const input = e.inputBuffer.getChannelData(0);
