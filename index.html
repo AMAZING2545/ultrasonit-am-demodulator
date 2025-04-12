@@ -111,6 +111,9 @@
             font-size: 12px;
             margin-top: 3px;
         }
+        #noiseFloorControl {
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -148,6 +151,12 @@
             <label for="agcControl">AGC Strength:</label>
             <input type="range" id="agcControl" min="0" max="1" value="0.5" step="0.05">
             <span id="agcValue" class="value-display">0.5</span>
+        </div>
+        
+        <div class="control-row">
+            <label for="noiseFloorControl">Noise Floor:</label>
+            <input type="range" id="noiseFloorControl" min="0" max="0.5" value="0.05" step="0.01">
+            <span id="noiseFloorValue" class="value-display">0.05</span>
         </div>
         
         <div class="control-row">
@@ -194,6 +203,8 @@
         let freqData = new Uint8Array();
         let avgSignalLevel = 0;
         let rangeEstimate = 0;
+        let noiseFloor = 0.05;
+        let dynamicNoiseFloor = 0.05;
         
         // UI elements
         const startButton = document.getElementById('startStop');
@@ -206,6 +217,8 @@
         const rangeIndicator = document.getElementById('rangeIndicator');
         const rangeMarker = document.getElementById('rangeMarker');
         const rangeValue = document.getElementById('rangeValue');
+        const noiseFloorControl = document.getElementById('noiseFloorControl');
+        const noiseFloorValue = document.getElementById('noiseFloorValue');
         
         // Control elements
         const carrierControl = document.getElementById('carrierControl');
@@ -254,22 +267,30 @@
             agcTarget = currentAgcStrength;
         });
         
+        noiseFloorControl.addEventListener('input', function() {
+            noiseFloor = parseFloat(this.value);
+            noiseFloorValue.textContent = noiseFloor.toFixed(2);
+        });
+        
         resetBtn.addEventListener('click', function() {
             carrierControl.value = 19000;
             bandwidthControl.value = 4000;
             gainControl.value = 8;
             agcControl.value = 0.5;
+            noiseFloorControl.value = 0.05;
             
             currentCarrier = 19000;
             currentBandwidth = 4000;
             currentGain = 8;
             currentAgcStrength = 0.5;
+            noiseFloor = 0.05;
             agcTarget = 0.5;
             
             carrierValue.textContent = '19000';
             bandwidthValue.textContent = '4000';
             gainValue.textContent = '8';
             agcValue.textContent = '0.50';
+            noiseFloorValue.textContent = '0.05';
             
             updateFilters();
         });
@@ -307,15 +328,14 @@
             // Smooth the signal level
             avgSignalLevel = 0.9 * avgSignalLevel + 0.1 * level;
             
+            // Automatically adjust dynamic noise floor
+            dynamicNoiseFloor = Math.max(noiseFloor, 0.9 * dynamicNoiseFloor + 0.1 * (avgSignalLevel * 0.2));
+            
             // Estimate range (0-15m scale)
-            // Empirical model based on your observations:
-            // - Full room coverage (~5m) = strong signal
-            // - 15m limit outdoors = weak signal
-            // - Beyond 15m = disconnected/no signal
             if (avgSignalLevel > 0.7) {
-                rangeEstimate = 5 * (1 - (avgSignalLevel - 0.7)/0.3); // 0-5m scale for strong signals
+                rangeEstimate = 5 * (1 - (avgSignalLevel - 0.7)/0.3);
             } else {
-                rangeEstimate = 5 + 10 * (0.7 - avgSignalLevel)/0.7; // 5-15m scale for weaker signals
+                rangeEstimate = 5 + 10 * (0.7 - avgSignalLevel)/0.7;
             }
             
             // Update UI
@@ -326,8 +346,8 @@
                 rangeValue.textContent = `Indoors (${rangeEstimate.toFixed(1)}m) - Full coverage`;
             } else if (avgSignalLevel > 0.3) {
                 rangeValue.textContent = `Outdoors (${rangeEstimate.toFixed(1)}m) - Directional`;
-            } else if (avgSignalLevel > 0.1) {
-                rangeValue.textContent = `Marginal (${rangeEstimate.toFixed(1)}m) - Unstable`;
+            } else if (avgSignalLevel > dynamicNoiseFloor) {
+                rangeValue.textContent = `Marginal (${rangeEstimate.toFixed(1)}m) - Background noise`;
             } else {
                 rangeValue.textContent = "Out of range (>15m)";
             }
@@ -362,7 +382,7 @@
                     
                     // Analyser for visualization and carrier detection
                     analyser = audioContext.createAnalyser();
-                    analyser.fftSize = 4096; // Larger FFT for better frequency resolution
+                    analyser.fftSize = 4096;
                     analyser.smoothingTimeConstant = 0.8;
                     
                     // Connect nodes
@@ -372,30 +392,34 @@
                         const input = e.inputBuffer.getChannelData(0);
                         const output = e.outputBuffer.getChannelData(0);
                         
-                        // AM demodulation (envelope detection)
-                        let filtered = new Float32Array(input.length);
-                        let envelope = new Float32Array(input.length);
-                        let demodulated = new Float32Array(input.length);
-                        
-                        // Calculate carrier strength (for detection)
+                        // Calculate carrier strength
                         let carrierSum = 0;
                         for (let i = 0; i < input.length; i++) {
                             carrierSum += Math.abs(input[i]);
                         }
                         carrierStrength = Math.min(carrierSum / input.length * 5, 1);
                         
-                        // Simple envelope detection (absolute value + lowpass)
+                        // AM demodulation with noise floor handling
+                        let filtered = new Float32Array(input.length);
+                        let envelope = new Float32Array(input.length);
+                        let demodulated = new Float32Array(input.length);
+                        
                         for (let i = 0; i < input.length; i++) {
                             filtered[i] = input[i];
-                            envelope[i] = Math.abs(filtered[i]);
+                            envelope[i] = Math.max(Math.abs(filtered[i]) - dynamicNoiseFloor, 0);
                             
                             // Automatic Gain Control
                             agcLevel = Math.max(envelope[i] * agcAttack + agcLevel * (1 - agcAttack), 
                                               agcLevel * (1 - agcRelease));
                             
-                            // Normalize the volume
-                            let gain = agcLevel > 0.001 ? (agcTarget / agcLevel) * currentGain : currentGain;
+                            // Normalize the volume with noise floor compensation
+                            let gain = agcLevel > 0.001 ? (agcTarget / Math.max(agcLevel, dynamicNoiseFloor)) * currentGain : currentGain;
                             demodulated[i] = Math.min(Math.max(envelope[i] * gain, -1), 1);
+                            
+                            // Mix in some noise when signal is very weak for audio continuity
+                            if (carrierStrength < dynamicNoiseFloor * 2) {
+                                demodulated[i] += (Math.random() * 2 - 1) * dynamicNoiseFloor * 0.5;
+                            }
                         }
                         
                         // Apply to output
@@ -463,7 +487,7 @@
             
             if (recordedData.length > 0) {
                 timeCtx.lineWidth = 2;
-                timeCtx.strokeStyle = 'rgb(0, 255, 0)';
+                timeCtx.strokeStyle = carrierStrength > dynamicNoiseFloor ? 'rgb(0, 255, 0)' : 'rgb(100, 100, 100)';
                 timeCtx.beginPath();
                 
                 const sliceWidth = timeWidth / recordedData.length;
@@ -486,7 +510,7 @@
                 timeCtx.stroke();
             }
             
-            // Frequency domain visualization (linear up to 22kHz)
+            // Frequency domain visualization
             const freqWidth = freqVisualizer.width;
             const freqHeight = freqVisualizer.height;
             freqCtx.clearRect(0, 0, freqWidth, freqHeight);
@@ -541,6 +565,14 @@
                 const highX = (highFreq / maxDisplayFreq) * freqWidth;
                 freqCtx.moveTo(highX, 0);
                 freqCtx.lineTo(highX, freqHeight);
+                freqCtx.stroke();
+                
+                // Draw noise floor indicator
+                const noiseFloorY = freqHeight - (dynamicNoiseFloor * 255 / 255) * freqHeight;
+                freqCtx.strokeStyle = 'rgba(255, 0, 0, 0.7)';
+                freqCtx.beginPath();
+                freqCtx.moveTo(0, noiseFloorY);
+                freqCtx.lineTo(freqWidth, noiseFloorY);
                 freqCtx.stroke();
             }
         }
