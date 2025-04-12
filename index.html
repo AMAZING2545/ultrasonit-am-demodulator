@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ultrasonic AM Demodulator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        #status {
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        #timeVisualizer, #freqVisualizer {
+            width: 100%;
+            height: 150px;
+            background-color: black;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .control-group {
+            margin: 15px 0;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        .control-row {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        label {
+            display: inline-block;
+            width: 150px;
+            font-weight: bold;
+        }
+        input[type="range"] {
+            flex-grow: 1;
+            margin: 0 10px;
+        }
+        .value-display {
+            display: inline-block;
+            width: 60px;
+            text-align: right;
+        }
+        #carrierIndicator {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #ccc;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        .carrier-present {
+            background-color: #0f0;
+            box-shadow: 0 0 10px #0f0;
+        }
+        .carrier-weak {
+            background-color: #ff0;
+            box-shadow: 0 0 10px #ff0;
+        }
+        .freq-labels {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            margin-top: -15px;
+            font-size: 12px;
+            color: #777;
+        }
+        .visualizer-container {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Ultrasonic AM Demodulator</h1>
+    <div id="status">Press Start to begin listening for ultrasonic AM signals</div>
+    <button id="startStop">Start</button>
+    <button id="resetBtn">Reset Settings</button>
+    
+    <div class="control-group">
+        <div class="control-row">
+            <label for="carrierControl">Carrier Frequency:</label>
+            <input type="range" id="carrierControl" min="0" max="22000" value="19000" step="100">
+            <span id="carrierValue" class="value-display">19000</span>
+            <span>Hz</span>
+            <div id="carrierIndicator" title="Carrier detection"></div>
+        </div>
+        
+        <div class="control-row">
+            <label for="bandwidthControl">Bandwidth:</label>
+            <input type="range" id="bandwidthControl" min="500" max="8000" value="4000" step="100">
+            <span id="bandwidthValue" class="value-display">4000</span>
+            <span>Hz</span>
+        </div>
+    </div>
+    
+    <div class="control-group">
+        <div class="control-row">
+            <label for="gainControl">Output Gain:</label>
+            <input type="range" id="gainControl" min="0.01" max="20" value="1" step="0.01">
+            <span id="gainValue" class="value-display">1</span>
+            <span>x</span>
+        </div>
+        
+        <div class="control-row">
+            <label for="agcControl">AGC Strength:</label>
+            <input type="range" id="agcControl" min="0" max="1" value="0.5" step="0.05">
+            <span id="agcValue" class="value-display">0.5</span>
+        </div>
+    </div>
+    
+    <div class="visualizer-container">
+        <canvas id="timeVisualizer"></canvas>
+        <canvas id="freqVisualizer"></canvas>
+        <div class="freq-labels">
+            <span>0Hz</span>
+            <span>5kHz</span>
+            <span>10kHz</span>
+            <span>15kHz</span>
+            <span>20kHz</span>
+            <span>22kHz</span>
+        </div>
+    </div>
+
+    <script>
+        // Settings
+        const fs = 48000;  // Sample rate
+        const blocksize = 4096;
+        const maxDisplayFreq = 22000; // Maximum frequency to display
+        
+        // State variables
+        let audioContext;
+        let processor;
+        let analyser;
+        let bandpassFilter;
+        let lowpassFilter;
+        let stream;
+        let isRunning = false;
+        let recordedData = [];
+        let carrierDetected = false;
+        let carrierStrength = 0;
+        let freqData = new Uint8Array();
+        
+        // UI elements
+        const startButton = document.getElementById('startStop');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusDiv = document.getElementById('status');
+        const timeVisualizer = document.getElementById('timeVisualizer');
+        const timeCtx = timeVisualizer.getContext('2d');
+        const freqVisualizer = document.getElementById('freqVisualizer');
+        const freqCtx = freqVisualizer.getContext('2d');
+        
+        // Control elements
+        const carrierControl = document.getElementById('carrierControl');
+        const carrierValue = document.getElementById('carrierValue');
+        const bandwidthControl = document.getElementById('bandwidthControl');
+        const bandwidthValue = document.getElementById('bandwidthValue');
+        const gainControl = document.getElementById('gainControl');
+        const gainValue = document.getElementById('gainValue');
+        const agcControl = document.getElementById('agcControl');
+        const agcValue = document.getElementById('agcValue');
+        const carrierIndicator = document.getElementById('carrierIndicator');
+        
+        // Current values
+        let currentCarrier = 19000;
+        let currentBandwidth = 4000;
+        let currentGain = 8;
+        let currentAgcStrength = 0.5;
+        
+        // AGC variables
+        let agcLevel = 0.1;
+        let agcTarget = 0.5;
+        let agcAttack = 0.01;
+        let agcRelease = 0.001;
+        
+        // Update displays when controls change
+        carrierControl.addEventListener('input', function() {
+            currentCarrier = parseInt(this.value);
+            carrierValue.textContent = currentCarrier;
+            updateFilters();
+        });
+        
+        bandwidthControl.addEventListener('input', function() {
+            currentBandwidth = parseInt(this.value);
+            bandwidthValue.textContent = currentBandwidth;
+            updateFilters();
+        });
+        
+        gainControl.addEventListener('input', function() {
+            currentGain = parseFloat(this.value);
+            gainValue.textContent = currentGain.toFixed(1);
+        });
+        
+        agcControl.addEventListener('input', function() {
+            currentAgcStrength = parseFloat(this.value);
+            agcValue.textContent = currentAgcStrength.toFixed(2);
+            agcTarget = currentAgcStrength;
+        });
+        
+        resetBtn.addEventListener('click', function() {
+            carrierControl.value = 19000;
+            bandwidthControl.value = 4000;
+            gainControl.value = 8;
+            agcControl.value = 0.5;
+            
+            currentCarrier = 19000;
+            currentBandwidth = 4000;
+            currentGain = 8;
+            currentAgcStrength = 0.5;
+            agcTarget = 0.5;
+            
+            carrierValue.textContent = '19000';
+            bandwidthValue.textContent = '4000';
+            gainValue.textContent = '8';
+            agcValue.textContent = '0.50';
+            
+            updateFilters();
+        });
+        
+        function updateFilters() {
+            if (!bandpassFilter || !lowpassFilter) return;
+            
+            // Update bandpass filter
+            const centerFreq = currentCarrier;
+            const lowcut = centerFreq - currentBandwidth/2;
+            const highcut = centerFreq + currentBandwidth/2;
+            
+            bandpassFilter.frequency.value = (highcut + lowcut) / 2;
+            bandpassFilter.Q.value = bandpassFilter.frequency.value / (highcut - lowcut);
+            
+            // Update lowpass filter
+            lowpassFilter.frequency.value = currentBandwidth;
+        }
+        
+        function updateCarrierIndicator() {
+            carrierIndicator.classList.remove('carrier-present', 'carrier-weak');
+            
+            if (carrierStrength > 0.7) {
+                carrierIndicator.classList.add('carrier-present');
+                carrierIndicator.title = "Strong carrier detected";
+            } else if (carrierStrength > 0.3) {
+                carrierIndicator.classList.add('carrier-weak');
+                carrierIndicator.title = "Weak carrier detected";
+            } else {
+                carrierIndicator.title = "No carrier detected";
+            }
+        }
+        
+        function startProcessing() {
+            statusDiv.textContent = "Initializing audio...";
+            
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: fs });
+                
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(function(mediaStream) {
+                        stream = mediaStream;
+                        const source = audioContext.createMediaStreamSource(mediaStream);
+                        
+                        // Create processing chain
+                        bandpassFilter = createBandpassFilter(audioContext, 
+                            currentCarrier - currentBandwidth/2, 
+                            currentCarrier + currentBandwidth/2);
+                        
+                        lowpassFilter = createLowpassFilter(audioContext, currentBandwidth);
+                        
+                        // Create script processor for custom DSP
+                        processor = audioContext.createScriptProcessor(blocksize, 1, 1);
+                        
+                        // Analyser for visualization and carrier detection
+                        analyser = audioContext.createAnalyser();
+                        analyser.fftSize = 4096; // Larger FFT for better frequency resolution
+                        analyser.smoothingTimeConstant = 0.8;
+                        
+                        // Connect nodes
+                        source.connect(bandpassFilter);
+                        
+                        processor.onaudioprocess = function(e) {
+                            const input = e.inputBuffer.getChannelData(0);
+                            const output = e.outputBuffer.getChannelData(0);
+                            
+                            // AM demodulation (envelope detection)
+                            let filtered = new Float32Array(input.length);
+                            let envelope = new Float32Array(input.length);
+                            let demodulated = new Float32Array(input.length);
+                            
+                            // Calculate carrier strength (for detection)
+                            let carrierSum = 0;
+                            for (let i = 0; i < input.length; i++) {
+                                carrierSum += Math.abs(input[i]);
+                            }
+                            carrierStrength = Math.min(carrierSum / input.length * 5, 1);
+                            
+                            // Simple envelope detection (absolute value + lowpass)
+                            for (let i = 0; i < input.length; i++) {
+                                filtered[i] = input[i];
+                                envelope[i] = Math.abs(filtered[i]);
+                                
+                                // Automatic Gain Control
+                                agcLevel = Math.max(envelope[i] * agcAttack + agcLevel * (1 - agcAttack), 
+                                                  agcLevel * (1 - agcRelease));
+                                
+                                // Normalize the volume
+                                let gain = agcLevel > 0.001 ? (agcTarget / agcLevel) * currentGain : currentGain;
+                                demodulated[i] = Math.min(Math.max(envelope[i] * gain, -1), 1);
+                            }
+                            
+                            // Apply to output
+                            for (let i = 0; i < output.length; i++) {
+                                output[i] = demodulated[i];
+                            }
+                            
+                            // Store for visualization
+                            recordedData = demodulated;
+                            
+                            // Get frequency data
+                            freqData = new Uint8Array(analyser.frequencyBinCount);
+                            analyser.getByteFrequencyData(freqData);
+                            
+                            // Update UI
+                            updateCarrierIndicator();
+                        };
+                        
+                        bandpassFilter.connect(processor);
+                        processor.connect(lowpassFilter);
+                        lowpassFilter.connect(analyser);
+                        analyser.connect(audioContext.destination);
+                        
+                        isRunning = true;
+                        statusDiv.textContent = "Listening for AM audio... Press Stop to end.";
+                        startButton.textContent = "Stop";
+                        
+                        // Start visualization
+                        visualize();
+                    })
+                    .catch(function(err) {
+                        statusDiv.textContent = "Error: " + err.message;
+                        console.error(err);
+                    });
+            } catch (e) {
+                statusDiv.textContent = "Error: " + e.message;
+                console.error(e);
+            }
+        }
+        
+        function stopProcessing() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            isRunning = false;
+            carrierStrength = 0;
+            updateCarrierIndicator();
+            statusDiv.textContent = "Processing stopped. Press Start to begin again.";
+            startButton.textContent = "Start";
+        }
+        
+        function visualize() {
+            if (!isRunning) return;
+            
+            requestAnimationFrame(visualize);
+            
+            // Time domain visualization
+            const timeWidth = timeVisualizer.width;
+            const timeHeight = timeVisualizer.height;
+            timeCtx.clearRect(0, 0, timeWidth, timeHeight);
+            
+            if (recordedData.length > 0) {
+                timeCtx.lineWidth = 2;
+                timeCtx.strokeStyle = 'rgb(0, 255, 0)';
+                timeCtx.beginPath();
+                
+                const sliceWidth = timeWidth / recordedData.length;
+                let x = 0;
+                
+                for (let i = 0; i < recordedData.length; i++) {
+                    const v = recordedData[i] / 2 + 0.5;
+                    const y = v * timeHeight;
+                    
+                    if (i === 0) {
+                        timeCtx.moveTo(x, y);
+                    } else {
+                        timeCtx.lineTo(x, y);
+                    }
+                    
+                    x += sliceWidth;
+                }
+                
+                timeCtx.lineTo(timeWidth, timeHeight/2);
+                timeCtx.stroke();
+            }
+            
+            // Frequency domain visualization (linear up to 22kHz)
+            const freqWidth = freqVisualizer.width;
+            const freqHeight = freqVisualizer.height;
+            freqCtx.clearRect(0, 0, freqWidth, freqHeight);
+            
+            if (freqData.length > 0) {
+                const nyquist = fs / 2;
+                const binSize = nyquist / freqData.length;
+                const displayBins = Math.floor(maxDisplayFreq / binSize);
+                
+                // Calculate frequency band edges
+                const lowFreq = currentCarrier - currentBandwidth/2;
+                const highFreq = currentCarrier + currentBandwidth/2;
+                const lowBin = Math.floor(lowFreq / binSize);
+                const highBin = Math.min(Math.ceil(highFreq / binSize), displayBins);
+                const centerBin = Math.floor(currentCarrier / binSize);
+                
+                // Draw frequency bars
+                const barWidth = freqWidth / displayBins;
+                let x = 0;
+                
+                for (let i = 0; i < displayBins; i++) {
+                    const barHeight = (freqData[i] / 255) * freqHeight;
+                    
+                    // Highlight the selected band
+                    if (i >= lowBin && i <= highBin) {
+                        freqCtx.fillStyle = i === centerBin ? 'rgb(255, 255, 0)' : 
+                                           'rgb(' + (freqData[i]+100) + ', 255, ' + (freqData[i]+100) + ')';
+                    } else {
+                        freqCtx.fillStyle = 'rgb(' + (freqData[i]+100) + ', 50, 50)';
+                    }
+                    
+                    freqCtx.fillRect(x, freqHeight - barHeight, barWidth, barHeight);
+                    x += barWidth;
+                }
+                
+                // Draw center frequency marker
+                freqCtx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+                freqCtx.setLineDash([5, 5]);
+                freqCtx.beginPath();
+                const markerX = (currentCarrier / maxDisplayFreq) * freqWidth;
+                freqCtx.moveTo(markerX, 0);
+                freqCtx.lineTo(markerX, freqHeight);
+                freqCtx.stroke();
+                freqCtx.setLineDash([]);
+                
+                // Draw bandwidth edges
+                freqCtx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+                freqCtx.beginPath();
+                const lowX = (lowFreq / maxDisplayFreq) * freqWidth;
+                freqCtx.moveTo(lowX, 0);
+                freqCtx.lineTo(lowX, freqHeight);
+                const highX = (highFreq / maxDisplayFreq) * freqWidth;
+                freqCtx.moveTo(highX, 0);
+                freqCtx.lineTo(highX, freqHeight);
+                freqCtx.stroke();
+            }
+        }
+        
+        // Filter creation helpers
+        function createBandpassFilter(audioContext, lowcut, highcut) {
+            const filter = audioContext.createBiquadFilter();
+            filter.type = "bandpass";
+            filter.frequency.value = (highcut + lowcut) / 2;
+            filter.Q.value = filter.frequency.value / (highcut - lowcut);
+            return filter;
+        }
+        
+        function createLowpassFilter(audioContext, cutoff) {
+            const filter = audioContext.createBiquadFilter();
+            filter.type = "lowpass";
+            filter.frequency.value = cutoff;
+            return filter;
+        }
+        
+        // Event listeners
+        startButton.addEventListener('click', function() {
+            if (isRunning) {
+                stopProcessing();
+            } else {
+                startProcessing();
+            }
+        });
+        
+        // Set up canvases
+        timeVisualizer.width = timeVisualizer.offsetWidth;
+        timeVisualizer.height = timeVisualizer.offsetHeight;
+        freqVisualizer.width = freqVisualizer.offsetWidth;
+        freqVisualizer.height = freqVisualizer.offsetHeight;
+        
+        window.addEventListener('resize', function() {
+            timeVisualizer.width = timeVisualizer.offsetWidth;
+            timeVisualizer.height = timeVisualizer.offsetHeight;
+            freqVisualizer.width = freqVisualizer.offsetWidth;
+            freqVisualizer.height = freqVisualizer.offsetHeight;
+        });
+    </script>
+</body>
+</html>
