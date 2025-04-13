@@ -133,7 +133,7 @@
         
         <div class="control-row">
             <label for="bandwidthControl">Bandwidth:</label>
-            <input type="range" id="bandwidthControl" min="500" max="8000" value="4000" step="10">
+            <input type="range" id="bandwidthControl" min="500" max="8000" value="4000" step="100">
             <span id="bandwidthValue" class="value-display">4000</span>
             <span>Hz</span>
         </div>
@@ -202,6 +202,7 @@
         let analyser;
         let bandpassFilter;
         let lowpassFilter;
+        let outputLowpassFilter;
         let inputGainNode;
         let stream;
         let isRunning = false;
@@ -321,7 +322,7 @@
         });
         
         function updateFilters() {
-            if (!bandpassFilter || !lowpassFilter) return;
+            if (!bandpassFilter || !lowpassFilter || !outputLowpassFilter) return;
             
             // Update bandpass filter
             const centerFreq = currentCarrier;
@@ -333,15 +334,18 @@
             
             // Update lowpass filter
             lowpassFilter.frequency.value = currentBandwidth;
+            
+            // Update output lowpass filter with bandwidth as cutoff frequency
+            outputLowpassFilter.frequency.value = currentBandwidth;
         }
         
         function updateCarrierIndicator() {
             carrierIndicator.classList.remove('carrier-present', 'carrier-weak');
             
-            if (carrierStrength > 0.7) {
+            if (carrierStrength > 0.5) {
                 carrierIndicator.classList.add('carrier-present');
                 carrierIndicator.title = "Strong carrier detected";
-            } else if (carrierStrength > 0.3) {
+            } else if (carrierStrength > 0.1) {
                 carrierIndicator.classList.add('carrier-weak');
                 carrierIndicator.title = "Weak carrier detected";
             } else {
@@ -354,7 +358,7 @@
             avgSignalLevel = 0.9 * avgSignalLevel + 0.1 * level;
             
             // Automatically adjust dynamic noise floor
-            dynamicNoiseFloor = Math.max(noiseFloor, 0.9 * dynamicNoiseFloor + 0.1 * (avgSignalLevel * 0.2));
+            dynamicNoiseFloor = noiseFloor;
             
             // Estimate range (0-15m scale)
             if (avgSignalLevel > 0.7) {
@@ -405,7 +409,10 @@
                         currentCarrier - currentBandwidth/2, 
                         currentCarrier + currentBandwidth/2);
                     
-                    lowpassFilter = createLowpassFilter(audioContext, currentBandwidth);
+                    lowpassFilter = createLowpassFilter(audioContext, currentBandwidth/2);
+                    
+                    // Create output lowpass filter
+                    outputLowpassFilter = createLowpassFilter(audioContext, currentBandwidth);
                     
                     // Create script processor for custom DSP
                     processor = audioContext.createScriptProcessor(blocksize, 1, 1);
@@ -472,7 +479,8 @@
                     
                     bandpassFilter.connect(processor);
                     processor.connect(lowpassFilter);
-                    lowpassFilter.connect(analyser);
+                    lowpassFilter.connect(outputLowpassFilter);
+                    outputLowpassFilter.connect(analyser);
                     analyser.connect(audioContext.destination);
                     
                     isRunning = true;
@@ -621,6 +629,7 @@
             const filter = audioContext.createBiquadFilter();
             filter.type = "lowpass";
             filter.frequency.value = cutoff;
+            filter.Q.value = 0.707; // Butterworth response
             return filter;
         }
         
