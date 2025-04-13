@@ -409,7 +409,7 @@
                         currentCarrier - currentBandwidth/2, 
                         currentCarrier + currentBandwidth/2);
                     
-                    lowpassFilter = createLowpassFilter(audioContext, currentBandwidth/2);
+                    lowpassFilter = createLowpassFilter(audioContext, currentBandwidth);
                     
                     // Create output lowpass filter
                     outputLowpassFilter = createLowpassFilter(audioContext, currentBandwidth);
