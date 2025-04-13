@@ -125,7 +125,7 @@
     <div class="control-group">
         <div class="control-row">
             <label for="carrierControl">Carrier Frequency:</label>
-            <input type="range" id="carrierControl" min="15000" max="22000" value="19000" step="100">
+            <input type="range" id="carrierControl" min="0" max="24000" value="19000" step="10">
             <span id="carrierValue" class="value-display">19000</span>
             <span>Hz</span>
             <div id="carrierIndicator" title="Carrier detection"></div>
@@ -133,7 +133,7 @@
         
         <div class="control-row">
             <label for="bandwidthControl">Bandwidth:</label>
-            <input type="range" id="bandwidthControl" min="500" max="6000" value="4000" step="100">
+            <input type="range" id="bandwidthControl" min="500" max="8000" value="4000" step="10">
             <span id="bandwidthValue" class="value-display">4000</span>
             <span>Hz</span>
         </div>
@@ -437,7 +437,7 @@
                         
                         for (let i = 0; i < input.length; i++) {
                             filtered[i] = input[i];
-                            envelope[i] = Math.max(Math.abs(filtered[i]) - dynamicNoiseFloor, 0);
+                            envelope[i] = Math.max(Math.abs(filtered[i]), 0);
                             
                             // Automatic Gain Control
                             agcLevel = Math.max(envelope[i] * agcAttack + agcLevel * (1 - agcAttack), 
